@@ -1,4 +1,4 @@
-name: Build Upscale Video APK
+ name: Build Upscale Video APK
 
 on:
   push:
@@ -86,7 +86,7 @@ jobs:
 
               kotlinOptions {
                   jvmTarget = "17"
-                  freeCompilerArgs += "-opt-in=androidx.media3.common.util.UnstableApi"
+                  freeCompilerArgs = listOf("-opt-in=androidx.media3.common.util.UnstableApi")
               }
           }
 
@@ -128,6 +128,7 @@ jobs:
           import android.graphics.Color
           import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
+          import android.media.MediaMetadataRetriever
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
@@ -376,6 +377,28 @@ jobs:
                   }
               }
 
+              private fun calculateTargetHeight(uri: Uri, shortSide: Int): Int {
+                  val retriever = MediaMetadataRetriever()
+                  return try {
+                      retriever.setDataSource(this, uri)
+                      val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                      val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                      if (width > 0 && height > 0 && height > width) {
+                          val scaled = ((shortSide.toLong() * height) / width).toInt()
+                          if (scaled % 2 == 0) scaled else scaled + 1
+                      } else {
+                          shortSide
+                      }
+                  } catch (_: Exception) {
+                      shortSide
+                  } finally {
+                      try {
+                          retriever.release()
+                      } catch (_: Exception) {
+                      }
+                  }
+              }
+
               private fun startRender() {
                   val uri = selectedUri ?: return
 
@@ -385,6 +408,8 @@ jobs:
                       else -> Triple(1080, 14_000_000, "1080p")
                   }
 
+                  val targetHeight = calculateTargetHeight(uri, shortSide)
+
                   val mimeType = if (rgCodec.checkedRadioButtonId == idH265) {
                       MimeTypes.VIDEO_H265
                   } else {
@@ -392,7 +417,7 @@ jobs:
                   }
 
                   val effects = mutableListOf<Effect>()
-                  effects.add(Presentation.createForShortSide(shortSide))
+                  effects.add(Presentation.createForHeight(targetHeight))
                   if (cbEnhance.isChecked) {
                       effects.add(Contrast(0.10f))
                   }
@@ -531,8 +556,8 @@ jobs:
 
       - name: Compilar APK
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          gradle assembleDebug
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          gradle assembleDebug --stacktrace
 
       - name: Disponibilizar APK para download
         uses: actions/upload-artifact@v4
