@@ -1,0 +1,541 @@
+name: Build Upscale Video APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Criar arquivos do projeto Android
+        run: |
+          mkdir -p app/src/main/java/com/upscale/video
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "UpscaleVideo"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.upscale.video"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.upscale.video"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+                  freeCompilerArgs += "-opt-in=androidx.media3.common.util.UnstableApi"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.activity:activity-ktx:1.9.0")
+              implementation("androidx.media3:media3-transformer:1.4.1")
+              implementation("androidx.media3:media3-effect:1.4.1")
+              implementation("androidx.media3:media3-common:1.4.1")
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:allowBackup="true"
+                  android:label="Upscale Vídeo"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/upscale/video/MainActivity.kt
+          @file:OptIn(androidx.media3.common.util.UnstableApi::class)
+
+          package com.upscale.video
+
+          import android.content.ContentValues
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Environment
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.MediaStore
+          import android.provider.OpenableColumns
+          import android.view.Gravity
+          import android.view.View
+          import android.view.WindowManager
+          import android.widget.Button
+          import android.widget.CheckBox
+          import android.widget.LinearLayout
+          import android.widget.ProgressBar
+          import android.widget.RadioButton
+          import android.widget.RadioGroup
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import androidx.activity.ComponentActivity
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.media3.common.Effect
+          import androidx.media3.common.MediaItem
+          import androidx.media3.common.MimeTypes
+          import androidx.media3.effect.Contrast
+          import androidx.media3.effect.Presentation
+          import androidx.media3.transformer.Composition
+          import androidx.media3.transformer.DefaultEncoderFactory
+          import androidx.media3.transformer.EditedMediaItem
+          import androidx.media3.transformer.Effects
+          import androidx.media3.transformer.ExportException
+          import androidx.media3.transformer.ExportResult
+          import androidx.media3.transformer.ProgressHolder
+          import androidx.media3.transformer.Transformer
+          import androidx.media3.transformer.VideoEncoderSettings
+          import java.io.File
+          import java.io.FileInputStream
+
+          class MainActivity : ComponentActivity() {
+
+              private var selectedUri: Uri? = null
+              private var transformer: Transformer? = null
+              private var tempOutputFile: File? = null
+              private var isRendering = false
+
+              private val handler = Handler(Looper.getMainLooper())
+              private val progressHolder = ProgressHolder()
+
+              private lateinit var tvFileName: TextView
+              private lateinit var tvStatus: TextView
+              private lateinit var progressBar: ProgressBar
+              private lateinit var btnPick: Button
+              private lateinit var btnRender: Button
+              private lateinit var btnCancel: Button
+              private lateinit var rgResolution: RadioGroup
+              private lateinit var rgCodec: RadioGroup
+              private lateinit var cbEnhance: CheckBox
+
+              private val id1080 = View.generateViewId()
+              private val id2k = View.generateViewId()
+              private val id4k = View.generateViewId()
+              private val idH264 = View.generateViewId()
+              private val idH265 = View.generateViewId()
+
+              private val pickVideoLauncher = registerForActivityResult(
+                  ActivityResultContracts.GetContent()
+              ) { uri ->
+                  if (uri != null) {
+                      selectedUri = uri
+                      tvFileName.text = "Vídeo: ${getFileName(uri)}"
+                      tvStatus.text = "Pronto para renderizar."
+                      btnRender.isEnabled = true
+                  }
+              }
+
+              private val progressRunnable = object : Runnable {
+                  override fun run() {
+                      val t = transformer ?: return
+                      if (!isRendering) return
+                      val state = t.getProgress(progressHolder)
+                      if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
+                          progressBar.progress = progressHolder.progress
+                          tvStatus.text = "Renderizando: ${progressHolder.progress}%"
+                      }
+                      handler.postDelayed(this, 300)
+                  }
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(buildUi())
+              }
+
+              private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+              private fun roundedBg(colorHex: String, radiusDp: Int = 14): GradientDrawable {
+                  return GradientDrawable().apply {
+                      setColor(Color.parseColor(colorHex))
+                      cornerRadius = dp(radiusDp).toFloat()
+                  }
+              }
+
+              private fun buildUi(): View {
+                  val scroll = ScrollView(this).apply {
+                      setBackgroundColor(Color.parseColor("#111318"))
+                  }
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(20), dp(28), dp(20), dp(28))
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "Upscale Vídeo"
+                      textSize = 26f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.WHITE)
+                  }
+                  root.addView(title)
+
+                  val subtitle = TextView(this).apply {
+                      text = "1080p • 2K • 4K via Hardware"
+                      textSize = 14f
+                      setTextColor(Color.parseColor("#9AA0A6"))
+                      setPadding(0, dp(4), 0, dp(20))
+                  }
+                  root.addView(subtitle)
+
+                  btnPick = Button(this).apply {
+                      text = "Selecionar Vídeo da Galeria"
+                      setTextColor(Color.WHITE)
+                      textSize = 15f
+                      background = roundedBg("#2563EB")
+                      setPadding(dp(16), dp(14), dp(16), dp(14))
+                      setOnClickListener { pickVideoLauncher.launch("video/*") }
+                  }
+                  root.addView(btnPick)
+
+                  tvFileName = TextView(this).apply {
+                      text = "Nenhum vídeo selecionado"
+                      textSize = 14f
+                      setTextColor(Color.parseColor("#D1D5DB"))
+                      setPadding(0, dp(12), 0, dp(18))
+                  }
+                  root.addView(tvFileName)
+
+                  root.addView(sectionLabel("Resolução de Saída"))
+
+                  rgResolution = RadioGroup(this).apply {
+                      orientation = RadioGroup.VERTICAL
+                      background = roundedBg("#1B1F27")
+                      setPadding(dp(14), dp(10), dp(14), dp(10))
+                      addView(makeRadio(id1080, "1080p (Full HD)", true))
+                      addView(makeRadio(id2k, "2K (1440p)", false))
+                      addView(makeRadio(id4k, "4K (2160p Ultra HD)", false))
+                  }
+                  root.addView(rgResolution)
+
+                  root.addView(sectionLabel("Codec de Vídeo"))
+
+                  rgCodec = RadioGroup(this).apply {
+                      orientation = RadioGroup.VERTICAL
+                      background = roundedBg("#1B1F27")
+                      setPadding(dp(14), dp(10), dp(14), dp(10))
+                      addView(makeRadio(idH264, "H.264 (Compatibilidade máxima)", true))
+                      addView(makeRadio(idH265, "H.265 / HEVC (Menor tamanho)", false))
+                  }
+                  root.addView(rgCodec)
+
+                  cbEnhance = CheckBox(this).apply {
+                      text = "Aplicar realce leve de contraste/definição"
+                      setTextColor(Color.WHITE)
+                      isChecked = true
+                      setPadding(dp(6), dp(18), dp(6), dp(18))
+                  }
+                  root.addView(cbEnhance)
+
+                  btnRender = Button(this).apply {
+                      text = "Renderizar Vídeo"
+                      setTextColor(Color.WHITE)
+                      textSize = 16f
+                      isEnabled = false
+                      background = roundedBg("#16A34A")
+                      setPadding(dp(16), dp(14), dp(16), dp(14))
+                      setOnClickListener { startRender() }
+                  }
+                  root.addView(btnRender)
+
+                  btnCancel = Button(this).apply {
+                      text = "Cancelar"
+                      setTextColor(Color.WHITE)
+                      textSize = 14f
+                      visibility = View.GONE
+                      background = roundedBg("#DC2626")
+                      val params = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          LinearLayout.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = dp(10) }
+                      layoutParams = params
+                      setOnClickListener { cancelRender() }
+                  }
+                  root.addView(btnCancel)
+
+                  progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                      max = 100
+                      progress = 0
+                      val params = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          dp(10)
+                      ).apply { topMargin = dp(20) }
+                      layoutParams = params
+                  }
+                  root.addView(progressBar)
+
+                  tvStatus = TextView(this).apply {
+                      text = "Escolha um vídeo para começar."
+                      textSize = 14f
+                      gravity = Gravity.CENTER
+                      setTextColor(Color.parseColor("#93C5FD"))
+                      setPadding(0, dp(12), 0, 0)
+                  }
+                  root.addView(tvStatus)
+
+                  scroll.addView(root)
+                  return scroll
+              }
+
+              private fun sectionLabel(label: String): TextView {
+                  return TextView(this).apply {
+                      text = label
+                      textSize = 14f
+                      setTypeface(null, Typeface.BOLD)
+                      setTextColor(Color.parseColor("#9AA0A6"))
+                      setPadding(0, dp(14), 0, dp(8))
+                  }
+              }
+
+              private fun makeRadio(id: Int, text: String, checked: Boolean): RadioButton {
+                  return RadioButton(this).apply {
+                      this.id = id
+                      this.text = text
+                      this.isChecked = checked
+                      setTextColor(Color.WHITE)
+                      textSize = 15f
+                      setPadding(dp(6), dp(8), dp(6), dp(8))
+                  }
+              }
+
+              private fun startRender() {
+                  val uri = selectedUri ?: return
+
+                  val (shortSide, bitrate, label) = when (rgResolution.checkedRadioButtonId) {
+                      id2k -> Triple(1440, 24_000_000, "2K")
+                      id4k -> Triple(2160, 45_000_000, "4K")
+                      else -> Triple(1080, 14_000_000, "1080p")
+                  }
+
+                  val mimeType = if (rgCodec.checkedRadioButtonId == idH265) {
+                      MimeTypes.VIDEO_H265
+                  } else {
+                      MimeTypes.VIDEO_H264
+                  }
+
+                  val effects = mutableListOf<Effect>()
+                  effects.add(Presentation.createForShortSide(shortSide))
+                  if (cbEnhance.isChecked) {
+                      effects.add(Contrast(0.10f))
+                  }
+
+                  val editedMediaItem = EditedMediaItem.Builder(MediaItem.fromUri(uri))
+                      .setEffects(Effects(emptyList(), effects))
+                      .build()
+
+                  val encoderFactory = DefaultEncoderFactory.Builder(this)
+                      .setRequestedVideoEncoderSettings(
+                          VideoEncoderSettings.Builder()
+                              .setBitrate(bitrate)
+                              .build()
+                      )
+                      .build()
+
+                  val outFile = File(cacheDir, "render_${label}_${System.currentTimeMillis()}.mp4")
+                  tempOutputFile = outFile
+
+                  setRenderingState(true)
+                  tvStatus.text = "Iniciando renderização $label..."
+                  progressBar.progress = 0
+
+                  val t = Transformer.Builder(this)
+                      .setVideoMimeType(mimeType)
+                      .setEncoderFactory(encoderFactory)
+                      .addListener(object : Transformer.Listener {
+                          override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                              handler.removeCallbacks(progressRunnable)
+                              progressBar.progress = 100
+                              tvStatus.text = "Salvando na galeria..."
+                              saveToGallery(outFile, label)
+                          }
+
+                          override fun onError(
+                              composition: Composition,
+                              exportResult: ExportResult,
+                              exportException: ExportException
+                          ) {
+                              handler.removeCallbacks(progressRunnable)
+                              outFile.delete()
+                              setRenderingState(false)
+                              tvStatus.text = "Erro: ${exportException.localizedMessage ?: "falha na renderização"}"
+                          }
+                      })
+                      .build()
+
+                  transformer = t
+                  t.start(editedMediaItem, outFile.absolutePath)
+                  handler.post(progressRunnable)
+              }
+
+              private fun cancelRender() {
+                  handler.removeCallbacks(progressRunnable)
+                  transformer?.cancel()
+                  transformer = null
+                  tempOutputFile?.delete()
+                  setRenderingState(false)
+                  progressBar.progress = 0
+                  tvStatus.text = "Renderização cancelada."
+              }
+
+              private fun saveToGallery(sourceFile: File, resLabel: String) {
+                  Thread {
+                      try {
+                          val fileName = "Upscale_${resLabel}_${System.currentTimeMillis()}.mp4"
+                          val values = ContentValues().apply {
+                              put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
+                              put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                  put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/UpscaleVideo")
+                                  put(MediaStore.Video.Media.IS_PENDING, 1)
+                              }
+                          }
+
+                          val resolver = contentResolver
+                          val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                              ?: throw Exception("Não foi possível criar arquivo na galeria.")
+
+                          resolver.openOutputStream(uri)?.use { out ->
+                              FileInputStream(sourceFile).use { input ->
+                                  input.copyTo(out)
+                              }
+                          }
+
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                              values.clear()
+                              values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                              resolver.update(uri, values, null, null)
+                          }
+
+                          sourceFile.delete()
+                          runOnUiThread {
+                              setRenderingState(false)
+                              tvStatus.text = "Concluído! Salvo em Movies/UpscaleVideo/$fileName"
+                          }
+                      } catch (e: Exception) {
+                          runOnUiThread {
+                              setRenderingState(false)
+                              tvStatus.text = "Erro ao salvar: ${e.localizedMessage}"
+                          }
+                      }
+                  }.start()
+              }
+
+              private fun setRenderingState(active: Boolean) {
+                  isRendering = active
+                  btnPick.isEnabled = !active
+                  btnRender.isEnabled = !active && selectedUri != null
+                  btnCancel.visibility = if (active) View.VISIBLE else View.GONE
+                  if (active) {
+                      window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  } else {
+                      window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  }
+              }
+
+              private fun getFileName(uri: Uri): String {
+                  return try {
+                      contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                          val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                          if (idx != -1 && cursor.moveToFirst()) cursor.getString(idx) else null
+                      } ?: "Vídeo selecionado"
+                  } catch (_: Exception) {
+                      "Vídeo selecionado"
+                  }
+              }
+
+              override fun onDestroy() {
+                  handler.removeCallbacks(progressRunnable)
+                  transformer?.cancel()
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+      - name: Compilar APK
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          gradle assembleDebug
+
+      - name: Disponibilizar APK para download
+        uses: actions/upload-artifact@v4
+        with:
+          name: UpscaleVideo-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
